@@ -11,63 +11,86 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 
+import java.time.Duration;
 import java.util.*;
+
 
 @Service
 public class AIService {
 
-    @Autowired
-    private WebClient webClient;
-
-    @Autowired
-    private AIConfig config;
-
-    @Autowired
-    private ObjectMapper objectMapper;
+    private final WebClient webClient;
+    private final AIConfig config;
+    private final ObjectMapper objectMapper;
 
     private static final String SYSTEM_RULES =
-            "You are a senior FAANG interviewer. Be strict but fair. No extra explanation.";
+            "You are a senior FAANG interviewer. Be strict but fair.";
 
+    public AIService(WebClient webClient, AIConfig config, ObjectMapper objectMapper) {
+        this.webClient = webClient;
+        this.config = config;
+        this.objectMapper = objectMapper;
+    }
+
+    // =========================
+    // 🚀 AI CALL (IMPROVED)
+    // =========================
     public Mono<String> callAI(String prompt) {
 
-        Map<String, Object> body = new HashMap<>();
-        body.put("model", config.getModel());
-
-        body.put("messages", List.of(
-                Map.of("role", "user", "content", prompt)
-        ));
+        Map<String, Object> body = Map.of(
+                "model", config.getModel(),
+                "messages", List.of(
+                        Map.of("role", "user", "content", prompt)
+                )
+        );
 
         return webClient.post()
                 .uri(config.getApiUrl())
                 .header(HttpHeaders.AUTHORIZATION, "Bearer " + config.getApiKey())
-                .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                .contentType(MediaType.APPLICATION_JSON)
                 .bodyValue(body)
                 .retrieve()
                 .bodyToMono(Map.class)
+                .timeout(Duration.ofSeconds(15)) // ✅ prevents hanging
                 .map(this::extractText)
-                .onErrorReturn("ERROR_CALLING_AI");
+                .onErrorResume(ex -> {
+                    return Mono.just("ERROR_CALLING_AI");
+                });
     }
 
-    private String extractText(Map response) {
+    // =========================
+    // 🚀 SAFE RESPONSE PARSER
+    // =========================
+    private String extractText(Map<?, ?> response) {
         try {
-            List choices = (List) response.get("choices");
-            Map choice = (Map) choices.get(0);
-            Map message = (Map) choice.get("message");
-            return (String) message.get("content");
+            List<?> choices = (List<?>) response.get("choices");
+            Map<?, ?> choice = (Map<?, ?>) choices.get(0);
+            Map<?, ?> message = (Map<?, ?>) choice.get("message");
+
+            return String.valueOf(message.get("content"));
+
         } catch (Exception e) {
             return "ERROR_PARSING_RESPONSE";
         }
     }
 
+    // =========================
+    // 🚀 GENERATE QUESTION
+    // =========================
     public Mono<String> generateQuestion(String role) {
 
         String prompt =
                 SYSTEM_RULES +
                         "\nGenerate ONE technical interview question for: " + role +
-                        "\nReturn ONLY question text.";
+                        "\nReturn ONLY the question.";
 
         return callAI(prompt)
-                .map(this::cleanQuestion);
+                .map(this::cleanQuestion)
+                .map(q -> {
+                    if (q.contains("ERROR")) {
+                        return "⚠ Unable to generate question. Please try again.";
+                    }
+                    return q;
+                });
     }
 
     private String cleanQuestion(String response) {
@@ -81,6 +104,9 @@ public class AIService {
                 .trim();
     }
 
+    // =========================
+    // 🚀 EVALUATE ANSWERS
+    // =========================
     public Mono<List<Map<String, Object>>> evaluateAnswers(List<AnswerRequest.QA> answers) {
 
         try {
@@ -89,6 +115,8 @@ public class AIService {
             String prompt =
                     SYSTEM_RULES +
                             "\nEvaluate answers fairly.\n" +
+                            "Give partial credit if needed.\n\n" +
+
                             "Return ONLY JSON array:\n" +
                             "[{\"question\":\"\",\"score\":0,\"good\":\"\",\"missing\":\"\",\"improvedAnswer\":\"\"}]\n\n" +
                             "DATA:\n" + jsonAnswers;
@@ -102,7 +130,7 @@ public class AIService {
                                     new TypeReference<List<Map<String, Object>>>() {}
                             );
                         } catch (Exception e) {
-                            return List.of(fallback(json));
+                            return List.of(fallback("Parsing failed: " + json));
                         }
                     });
 
@@ -111,15 +139,9 @@ public class AIService {
         }
     }
 
-    private Map<String, Object> fallback(String msg) {
-        Map<String, Object> map = new HashMap<>();
-        map.put("score", 0);
-        map.put("good", "Error occurred");
-        map.put("missing", "AI response issue");
-        map.put("improvedAnswer", msg);
-        return map;
-    }
-
+    // =========================
+    // 🚀 JSON CLEANER
+    // =========================
     private String cleanJson(String response) {
 
         if (response == null) return "[]";
@@ -137,5 +159,17 @@ public class AIService {
         }
 
         return "[]";
+    }
+
+    // =========================
+    // 🚀 FALLBACK
+    // =========================
+    private Map<String, Object> fallback(String msg) {
+        Map<String, Object> map = new HashMap<>();
+        map.put("score", 0);
+        map.put("good", "Error occurred");
+        map.put("missing", "AI response issue");
+        map.put("improvedAnswer", msg);
+        return map;
     }
 }

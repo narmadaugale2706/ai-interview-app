@@ -148,7 +148,11 @@ String apiKey = System.getenv("API_KEY");
 
 ## 📸 Screenshots
 
-> (Add screenshots here for better impact)
+<img width="1910" height="847" alt="image" src="https://github.com/user-attachments/assets/91d3e7bd-9840-4334-a97b-3dd36eb0e006" />
+
+<img width="1887" height="828" alt="image" src="https://github.com/user-attachments/assets/b27f576c-d019-47c3-a0c6-85ac548f28cb" />
+
+
 
 Example:
 

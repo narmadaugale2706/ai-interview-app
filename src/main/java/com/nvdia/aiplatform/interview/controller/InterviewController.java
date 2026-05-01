@@ -8,6 +8,7 @@ import reactor.core.publisher.Mono;
 
 import java.util.Map;
 
+
 @RestController
 @CrossOrigin("*")
 public class InterviewController {
@@ -21,19 +22,23 @@ public class InterviewController {
         String role = req.get("role");
 
         return aiService.generateQuestion(role)
-                .map(q -> Map.of("question", q));
+                .map(q -> Map.of("question", q))
+                .doOnError(e -> System.out.println("🔥 CONTROLLER ERROR: " + e.getMessage()))
+                .onErrorReturn(Map.of("question", "⚠ Backend error"));
     }
 
     @PostMapping("/evaluate-answers")
     public Mono<Map<String, Object>> evaluate(@RequestBody AnswerRequest request) {
 
+        System.out.println("🔥 REQUEST RECEIVED: " + request);
+
         return aiService.evaluateAnswers(request.getAnswers())
-                .map(f -> Map.of("feedback", f));
+                .map(f -> Map.of("feedback", f))
+                .doOnError(e -> System.out.println("🔥 EVALUATION ERROR: " + e.getMessage()));
     }
 
     @GetMapping("/")
     public String home() {
         return "AI Interview App Running 🚀";
     }
-
 }

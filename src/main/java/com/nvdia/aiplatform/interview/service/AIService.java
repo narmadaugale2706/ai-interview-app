@@ -21,7 +21,7 @@ public class AIService {
     private final ObjectMapper objectMapper;
 
     private static final String SYSTEM_RULES =
-            "You are a senior FAANG interviewer. Be strict but fair. No extra explanation.";
+            "You are a strict FAANG interviewer. Always respond in valid JSON only.";
 
     public AIService(WebClient webClient, AIConfig config, ObjectMapper objectMapper) {
         this.webClient = webClient;
@@ -30,7 +30,7 @@ public class AIService {
     }
 
     // =========================
-    // 🚀 CALL NVIDIA AI (FIXED)
+    // CALL AI
     // =========================
     public Mono<String> callAI(String prompt) {
 
@@ -48,101 +48,79 @@ public class AIService {
                 .bodyValue(body)
                 .retrieve()
                 .bodyToMono(Map.class)
-                .timeout(Duration.ofSeconds(15))
-                .doOnNext(resp -> System.out.println("🔥 AI RESPONSE: " + resp))
                 .map(this::extractText)
-                .onErrorResume(ex -> {
-                    System.out.println("❌ AI ERROR: " + ex.getMessage());
-                    return Mono.just("ERROR_CALLING_AI");
-                });
+                .doOnNext(res -> System.out.println("🔥 RAW AI RESPONSE: " + res))
+                .doOnError(e -> System.out.println("🔥 AI ERROR: " + e.getMessage()));
     }
 
     // =========================
-    // 🚀 SAFE RESPONSE PARSER
+    // EXTRACT RESPONSE
     // =========================
     private String extractText(Map<?, ?> response) {
 
         try {
-            if (response == null) return "EMPTY_RESPONSE";
+            List<?> choices = (List<?>) response.get("choices");
 
-            Object choicesObj = response.get("choices");
-
-            if (!(choicesObj instanceof List<?> choices) || choices.isEmpty()) {
-                return "NO_CHOICES_RETURNED";
+            if (choices == null || choices.isEmpty()) {
+                return "";
             }
 
-            Map<?, ?> firstChoice = (Map<?, ?>) choices.get(0);
-
-            Map<?, ?> message = (Map<?, ?>) firstChoice.get("message");
-
-            if (message == null || message.get("content") == null) {
-                return "NO_CONTENT";
-            }
+            Map<?, ?> first = (Map<?, ?>) choices.get(0);
+            Map<?, ?> message = (Map<?, ?>) first.get("message");
 
             return String.valueOf(message.get("content"));
 
         } catch (Exception e) {
-            return "ERROR_PARSING_RESPONSE";
+            return "";
         }
     }
 
     // =========================
-    // 🚀 GENERATE QUESTION
+    // GENERATE QUESTION
     // =========================
     public Mono<String> generateQuestion(String role) {
 
         String prompt =
                 SYSTEM_RULES +
-                        "\nGenerate ONE technical interview question for: " + role +
+                        "\nGenerate ONE interview question for: " + role +
                         "\nReturn ONLY the question text.";
 
         return callAI(prompt)
-                .map(this::cleanQuestion)
-                .map(q -> {
-
-                    if (q.contains("ERROR") || q.contains("NO_") || q.contains("EMPTY")) {
-                        return "⚠ Unable to generate question. Please try again.";
-                    }
-
-                    return q;
-                });
-    }
-
-    private String cleanQuestion(String response) {
-
-        if (response == null) return "";
-
-        return response
-                .replace("```", "")
-                .replaceAll("^\\d+\\.\\s*", "")
-                .replaceAll("^Q\\d+:\\s*", "")
-                .trim();
+                .map(res -> res.replace("```", "").trim())
+                .map(q -> q.isEmpty() ? "Unable to generate question" : q);
     }
 
     // =========================
-    // 🚀 EVALUATE ANSWERS
+    // EVALUATE ANSWERS (FIXED)
     // =========================
     public Mono<List<Map<String, Object>>> evaluateAnswers(List<AnswerRequest.QA> answers) {
 
         try {
-            String jsonAnswers = objectMapper.writeValueAsString(answers);
+            String input = objectMapper.writeValueAsString(answers);
 
             String prompt =
                     SYSTEM_RULES +
-                            "\nEvaluate answers fairly.\n" +
-                            "Return ONLY JSON array:\n" +
-                            "[{\"question\":\"\",\"score\":0,\"good\":\"\",\"missing\":\"\",\"improvedAnswer\":\"\"}]\n\n" +
-                            "DATA:\n" + jsonAnswers;
+                            "\nReturn ONLY valid JSON array. No explanation." +
+                            "\nFormat strictly like:" +
+                            "\n[" +
+                            "{\"question\":\"\",\"score\":8,\"good\":\"\",\"missing\":\"\",\"improvedAnswer\":\"\"}" +
+                            "]" +
+                            "\nDATA:\n" + input;
 
             return callAI(prompt)
                     .map(this::cleanJson)
                     .map(json -> {
+                        System.out.println("🔥 FINAL JSON BEFORE PARSE: " + json);
+
                         try {
                             return objectMapper.readValue(
                                     json,
                                     new TypeReference<List<Map<String, Object>>>() {}
                             );
                         } catch (Exception e) {
+                            System.out.println("🔥 JSON PARSE FAILED");
+                            e.printStackTrace();
+
                             return List.of(fallback("JSON_PARSE_FAILED"));
                         }
                     });
@@ -153,7 +131,7 @@ public class AIService {
     }
 
     // =========================
-    // 🚀 CLEAN JSON
+    // CLEAN JSON
     // =========================
     private String cleanJson(String response) {
 
@@ -175,14 +153,14 @@ public class AIService {
     }
 
     // =========================
-    // 🚀 FALLBACK
+    // FALLBACK
     // =========================
     private Map<String, Object> fallback(String msg) {
 
         Map<String, Object> map = new HashMap<>();
         map.put("score", 0);
         map.put("good", "Error occurred");
-        map.put("missing", "AI response issue");
+        map.put("missing", "AI issue");
         map.put("improvedAnswer", msg);
 
         return map;

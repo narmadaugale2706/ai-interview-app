@@ -3,10 +3,7 @@ package com.nvdia.aiplatform.interview.controller;
 import com.nvdia.aiplatform.interview.model.AnswerRequest;
 import com.nvdia.aiplatform.interview.service.AIService;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.web.bind.annotation.CrossOrigin;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Mono;
 
 import java.util.Map;
@@ -33,4 +30,10 @@ public class InterviewController {
         return aiService.evaluateAnswers(request.getAnswers())
                 .map(f -> Map.of("feedback", f));
     }
+
+    @GetMapping("/")
+    public String home() {
+        return "AI Interview App Running 🚀";
+    }
+
 }

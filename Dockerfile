@@ -1,13 +1,18 @@
-# Use Java 17
 FROM eclipse-temurin:17-jdk
 
 WORKDIR /app
 
-# Copy project files
-COPY . .
+COPY gradlew .
+COPY gradle gradle
+COPY build.gradle .
+COPY settings.gradle .
+COPY src src
 
-# Build the project
+# ✅ IMPORTANT FIX
+RUN chmod +x gradlew
+
+# Build project
 RUN ./gradlew build
 
-# Run the jar
+# Run jar
 CMD ["java", "-jar", "build/libs/*.jar"]

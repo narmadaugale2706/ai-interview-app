@@ -35,9 +35,6 @@ public class AIService {
         this.cacheManager = cacheManager;
     }
 
-    // =========================
-    // AI CALL (SAFE + LOGGING)
-    // =========================
     public Mono<String> callAI(String prompt) {
 
         Map<String, Object> body = Map.of(
@@ -55,42 +52,47 @@ public class AIService {
                 .retrieve()
                 .bodyToMono(Map.class)
                 .timeout(Duration.ofSeconds(10))
-                .doOnError(e -> log.error("🔥 AI CALL FAILED", e))
                 .map(this::extractText)
-                .doOnNext(res -> log.info("🔥 RAW AI RESPONSE: {}", res));
+                .onErrorResume(e -> {
+                    // SAFE fallback instead of crash
+                    return Mono.just("AI_ERROR");
+                });
     }
 
-    // =========================
-    // QUESTION (CACHE SAFE)
-    // =========================
     public Mono<String> generateQuestion(String role) {
 
         String cacheKey = "question_" + role;
 
         Cache cache = cacheManager.getCache("questions");
+
         if (cache != null) {
             String cached = cache.get(cacheKey, String.class);
-            if (cached != null) {
-                log.info("🔥 CACHE HIT");
+            if (cached != null && !cached.isBlank()) {
                 return Mono.just(cached);
             }
         }
 
         String prompt =
-                "You are FAANG interviewer. " +
-                        "Ask 1 Java interview question. " +
-                        "Return ONLY question text.";
+                "You are a FAANG interviewer. " +
+                        "Ask ONE short Java interview question. " +
+                        "Return only question text.";
 
         return callAI(prompt)
                 .map(this::cleanText)
-                .map(q -> q.isBlank() ? "Unable to generate question" : q)
+                .map(q -> {
+                    if (q == null || q.isBlank() || q.equals("AI_ERROR")) {
+                        return "What is Java OOP principle?";
+                    }
+                    return q;
+                })
                 .doOnNext(result -> {
                     if (cache != null) cache.put(cacheKey, result);
                 });
     }
 
+
     // =========================
-    // EVALUATION (FIXED)
+    // EVALUATION
     // =========================
     public Mono<List<Map<String, Object>>> evaluateAnswers(List<AnswerRequest.QA> answers) {
 
@@ -103,15 +105,15 @@ public class AIService {
             if (cache != null) {
                 List<Map<String, Object>> cached = cache.get(cacheKey, List.class);
                 if (cached != null) {
-                    log.info("🔥 CACHE HIT");
                     return Mono.just(cached);
                 }
             }
 
             String prompt =
-                    "You are FAANG interviewer evaluator.\n" +
-                            "Return ONLY valid JSON ARRAY.\n" +
-                            "No explanation, no markdown.\n" +
+                    "You are a strict FAANG interviewer evaluator.\n" +
+                            "Return ONLY valid JSON array.\n" +
+                            "NO explanation, NO markdown.\n" +
+                            "If input is invalid, still return empty array [].\n" +
                             "Format:\n" +
                             "[{\"question\":\"\",\"score\":8,\"good\":\"\",\"missing\":\"\",\"improvedAnswer\":\"\"}]\n" +
                             "DATA:\n" + input;
@@ -120,12 +122,17 @@ public class AIService {
                     .map(this::cleanJson)
                     .map(json -> {
                         try {
+                            if (json == null || json.isBlank() || json.equals("[]")) {
+                                return List.of(fallback("EMPTY_RESPONSE"));
+                            }
+
                             return objectMapper.readValue(
                                     json,
-                                    new TypeReference<List<Map<String, Object>>>() {}
+                                    new TypeReference<List<Map<String, Object>>>() {
+                                    }
                             );
+
                         } catch (Exception e) {
-                            log.error("🔥 JSON PARSE FAILED", e);
                             return List.of(fallback("PARSE_ERROR"));
                         }
                     })
@@ -134,44 +141,59 @@ public class AIService {
                     });
 
         } catch (Exception e) {
-            log.error("🔥 SERIALIZATION ERROR", e);
             return Mono.just(List.of(fallback("SERIALIZATION_ERROR")));
         }
     }
 
-    // =========================
-    // SAFE EXTRACTOR (FIXED NULL ISSUE)
-    // =========================
+
     private String extractText(Map<?, ?> response) {
 
         try {
             if (response == null) return "";
 
-            Object choicesObj = response.get("choices");
-            if (!(choicesObj instanceof List<?> choices) || choices.isEmpty()) {
-                log.error("Invalid AI response: {}", response);
-                return "";
+            // ERROR RESPONSE CHECK
+            if (response.containsKey("error")) {
+                return "AI_ERROR";
             }
 
-            Map<?, ?> first = (Map<?, ?>) choices.get(0);
-            Map<?, ?> message = (Map<?, ?>) first.get("message");
+            // OPENAI FORMAT
+            if (response.containsKey("choices")) {
 
-            if (message == null || message.get("content") == null) {
-                log.error("Missing content in response: {}", response);
-                return "";
+                List<?> choices = (List<?>) response.get("choices");
+
+                if (choices != null && !choices.isEmpty()) {
+
+                    Map<?, ?> first = (Map<?, ?>) choices.get(0);
+
+                    if (first.get("message") != null) {
+                        Map<?, ?> msg = (Map<?, ?>) first.get("message");
+                        Object content = msg.get("content");
+                        return content != null ? content.toString() : "";
+                    }
+
+                    if (first.get("text") != null) {
+                        return first.get("text").toString();
+                    }
+                }
             }
 
-            return message.get("content").toString();
+            // NVIDIA FORMAT
+            if (response.containsKey("outputs")) {
+                List<?> outputs = (List<?>) response.get("outputs");
+                if (outputs != null && !outputs.isEmpty()) {
+                    Map<?, ?> first = (Map<?, ?>) outputs.get(0);
+                    Object text = first.get("text");
+                    return text != null ? text.toString() : "";
+                }
+            }
+
+            return "AI_FORMAT_ERROR";
 
         } catch (Exception e) {
-            log.error("🔥 extractText FAILED", e);
-            return "";
+            return "EXTRACT_ERROR";
         }
     }
 
-    // =========================
-    // CLEANERS
-    // =========================
     private String cleanJson(String response) {
 
         if (response == null) return "[]";
@@ -188,17 +210,14 @@ public class AIService {
             return response.substring(start, end + 1);
         }
 
-        log.warn("⚠ Invalid JSON: {}", response);
         return "[]";
     }
+
 
     private String cleanText(String text) {
         return text == null ? "" : text.replace("```", "").trim();
     }
 
-    // =========================
-    // FALLBACK
-    // =========================
     private Map<String, Object> fallback(String msg) {
         Map<String, Object> map = new HashMap<>();
         map.put("score", 0);

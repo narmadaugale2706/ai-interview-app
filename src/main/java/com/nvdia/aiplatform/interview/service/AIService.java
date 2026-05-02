@@ -25,9 +25,6 @@ public class AIService {
     private final ObjectMapper objectMapper;
     private final CacheManager cacheManager;
 
-    private static final String SYSTEM_RULES =
-            "You are a strict FAANG interviewer. Respond only in JSON format.";
-
     public AIService(WebClient webClient,
                      AIConfig config,
                      ObjectMapper objectMapper,
@@ -39,7 +36,7 @@ public class AIService {
     }
 
     // =========================
-    // AI CALL (OPTIMIZED)
+    // SIMPLE FAST AI CALL
     // =========================
     public Mono<String> callAI(String prompt) {
 
@@ -62,36 +59,24 @@ public class AIService {
     }
 
     // =========================
-    // CACHE ENABLED QUESTION GENERATION
+    // GENERATE QUESTION (CACHE OPTIMIZED)
     // =========================
     public Mono<String> generateQuestion(String role) {
 
         String cacheKey = "question_" + role;
 
-        Cache cache = cacheManager.getCache("questions");
-        if (cache != null) {
-            String cached = cache.get(cacheKey, String.class);
-            if (cached != null) {
-                log.info("🔥 Cache HIT for role: {}", role);
-                return Mono.just(cached);
-            }
-        }
-
-        String prompt = "Ask 1 FAANG interview question for: " + role;
-
-        return callAI(prompt)
-                .map(this::cleanText)
-                .map(q -> q.isBlank() ? "Unable to generate question" : q)
-                .doOnNext(result -> {
-                    if (cache != null) {
-                        cache.put(cacheKey, result);
-                        log.info("💾 Cached question for role: {}", role);
-                    }
-                });
+        return getFromCache("questions", cacheKey, String.class)
+                .doOnNext(v -> log.info("🔥 Cache HIT for role: {}", role))
+                .switchIfEmpty(
+                        callAI("Ask 1 FAANG interview question for: " + role)
+                                .map(this::cleanText)
+                                .map(q -> q.isBlank() ? "Unable to generate question" : q)
+                                .doOnNext(result -> putCache("questions", cacheKey, result))
+                );
     }
 
     // =========================
-    // EVALUATION CACHE OPTIONAL
+    // EVALUATE ANSWERS (CACHE OPTIMIZED)
     // =========================
     public Mono<List<Map<String, Object>>> evaluateAnswers(List<AnswerRequest.QA> answers) {
 
@@ -99,40 +84,28 @@ public class AIService {
             String input = objectMapper.writeValueAsString(answers);
             String cacheKey = "eval_" + input.hashCode();
 
-            Cache cache = cacheManager.getCache("evaluations");
-
-            if (cache != null) {
-                List<Map<String, Object>> cached = cache.get(cacheKey, List.class);
-                if (cached != null) {
-                    log.info("🔥 Cache HIT for evaluation");
-                    return Mono.just(cached);
-                }
-            }
-
-            String prompt =
-                    SYSTEM_RULES +
-                            "\nReturn ONLY JSON array." +
-                            "\nFormat: [{question,score,good,missing,improvedAnswer}]" +
-                            "\nDATA:\n" + input;
-
-            return callAI(prompt)
-                    .map(this::cleanJson)
-                    .map(json -> {
-                        try {
-                            return objectMapper.readValue(
-                                    json,
-                                    new TypeReference<List<Map<String, Object>>>() {}
-                            );
-                        } catch (Exception e) {
-                            return List.of(fallback("PARSE_ERROR"));
-                        }
-                    })
-                    .doOnNext(result -> {
-                        if (cache != null) {
-                            cache.put(cacheKey, result);
-                            log.info("💾 Cached evaluation result");
-                        }
-                    });
+            return getFromCache("evaluations", cacheKey, List.class)
+                    .doOnNext(v -> log.info("🔥 Cache HIT for evaluation"))
+                    .switchIfEmpty(
+                            callAI(
+                                    "Return ONLY JSON array." +
+                                            " Format: [{question,score,good,missing,improvedAnswer}]" +
+                                            " DATA: " + input
+                            )
+                                    .map(this::cleanJson)
+                                    .map(json -> {
+                                        try {
+                                            return objectMapper.readValue(
+                                                    json,
+                                                    new TypeReference<List<Map<String, Object>>>() {}
+                                            );
+                                        } catch (Exception e) {
+                                            log.error("JSON parse error", e);
+                                            return List.of(fallback("PARSE_ERROR"));
+                                        }
+                                    })
+                                    .doOnNext(result -> putCache("evaluations", cacheKey, result))
+                    );
 
         } catch (Exception e) {
             return Mono.just(List.of(fallback("SERIALIZATION_ERROR")));
@@ -140,13 +113,30 @@ public class AIService {
     }
 
     // =========================
-    // HELPERS
+    // CACHE HELPERS (REACTIVE SAFE)
+    // =========================
+    private <T> Mono<T> getFromCache(String cacheName, String key, Class<T> type) {
+        Cache cache = cacheManager.getCache(cacheName);
+        if (cache == null) return Mono.empty();
+
+        T value = cache.get(key, type);
+        return value != null ? Mono.just(value) : Mono.empty();
+    }
+
+    private void putCache(String cacheName, String key, Object value) {
+        Cache cache = cacheManager.getCache(cacheName);
+        if (cache != null) {
+            cache.put(key, value);
+        }
+    }
+
+    // =========================
+    // RESPONSE PARSING
     // =========================
     private String extractText(Map<?, ?> response) {
 
         try {
             List<?> choices = (List<?>) response.get("choices");
-
             if (choices == null || choices.isEmpty()) return "";
 
             Map<?, ?> first = (Map<?, ?>) choices.get(0);
@@ -159,6 +149,9 @@ public class AIService {
         }
     }
 
+    // =========================
+    // CLEANERS
+    // =========================
     private String cleanText(String text) {
         return text == null ? "" : text.replace("```", "").trim();
     }
@@ -167,7 +160,8 @@ public class AIService {
 
         if (response == null) return "[]";
 
-        response = response.replace("```json", "")
+        response = response
+                .replace("```json", "")
                 .replace("```", "")
                 .trim();
 
@@ -181,11 +175,14 @@ public class AIService {
         return "[]";
     }
 
+    // =========================
+    // FALLBACK
+    // =========================
     private Map<String, Object> fallback(String msg) {
 
         Map<String, Object> map = new HashMap<>();
         map.put("score", 0);
-        map.put("good", "Error");
+        map.put("good", "Error occurred");
         map.put("missing", "System issue");
         map.put("improvedAnswer", msg);
         return map;

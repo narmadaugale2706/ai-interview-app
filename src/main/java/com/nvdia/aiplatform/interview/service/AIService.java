@@ -16,6 +16,8 @@ import reactor.core.publisher.Mono;
 import java.time.Duration;
 import java.util.*;
 
+import static reactor.netty.http.HttpConnectionLiveness.log;
+
 @Slf4j
 @Service
 public class AIService {
@@ -55,7 +57,8 @@ public class AIService {
                 .retrieve()
                 .bodyToMono(Map.class)
                 .timeout(Duration.ofSeconds(10))
-                .map(this::extractText);
+                .map(this::extractText)
+                .doOnNext(res -> log.info("🔥 RAW AI RESPONSE: {}", res));
     }
 
     // =========================
@@ -69,6 +72,7 @@ public class AIService {
         if (cache != null) {
             String cached = cache.get(cacheKey, String.class);
             if (cached != null) {
+                log.info("🔥 CACHE HIT");
                 return Mono.just(cached);
             }
         }
@@ -97,6 +101,7 @@ public class AIService {
             if (cache != null) {
                 List<Map<String, Object>> cached = cache.get(cacheKey, List.class);
                 if (cached != null) {
+                    log.info("🔥 CACHE HIT");
                     return Mono.just(cached);
                 }
             }
@@ -118,6 +123,7 @@ public class AIService {
                                     new TypeReference<List<Map<String, Object>>>() {}
                             );
                         } catch (Exception e) {
+                            log.error("JSON PARSE FAILED", e);
                             return List.of(fallback("PARSE_ERROR"));
                         }
                     })
@@ -168,6 +174,7 @@ public class AIService {
             return response.substring(start, end + 1);
         }
 
+        log.warn("⚠ Invalid JSON from AI: {}", response);
         return "[]";
     }
 

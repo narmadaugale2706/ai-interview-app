@@ -23,7 +23,6 @@ public class InterviewController {
 
         return aiService.generateQuestion(role)
                 .map(q -> Map.of("question", q))
-                .doOnError(e -> System.out.println("🔥 CONTROLLER ERROR: " + e.getMessage()))
                 .onErrorReturn(Map.of("question", "⚠ Backend error"));
     }
 
@@ -33,8 +32,7 @@ public class InterviewController {
         System.out.println("🔥 REQUEST RECEIVED: " + request);
 
         return aiService.evaluateAnswers(request.getAnswers())
-                .map(f -> Map.of("feedback", f))
-                .doOnError(e -> System.out.println("🔥 EVALUATION ERROR: " + e.getMessage()));
+                .map(f -> Map.of("feedback", f));
     }
 
     @GetMapping("/")

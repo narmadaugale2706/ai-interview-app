@@ -16,8 +16,6 @@ import reactor.core.publisher.Mono;
 import java.time.Duration;
 import java.util.*;
 
-import static reactor.netty.http.HttpConnectionLiveness.log;
-
 @Slf4j
 @Service
 public class AIService {
@@ -38,7 +36,7 @@ public class AIService {
     }
 
     // =========================
-    // AI CALL
+    // AI CALL (SAFE + LOGGING)
     // =========================
     public Mono<String> callAI(String prompt) {
 
@@ -57,12 +55,13 @@ public class AIService {
                 .retrieve()
                 .bodyToMono(Map.class)
                 .timeout(Duration.ofSeconds(10))
+                .doOnError(e -> log.error("🔥 AI CALL FAILED", e))
                 .map(this::extractText)
                 .doOnNext(res -> log.info("🔥 RAW AI RESPONSE: {}", res));
     }
 
     // =========================
-    // QUESTION (FIXED CACHE FLOW)
+    // QUESTION (CACHE SAFE)
     // =========================
     public Mono<String> generateQuestion(String role) {
 
@@ -77,7 +76,10 @@ public class AIService {
             }
         }
 
-        String prompt = "You are FAANG interviewer. Ask 1 Java interview question. Return ONLY question.";
+        String prompt =
+                "You are FAANG interviewer. " +
+                        "Ask 1 Java interview question. " +
+                        "Return ONLY question text.";
 
         return callAI(prompt)
                 .map(this::cleanText)
@@ -88,7 +90,7 @@ public class AIService {
     }
 
     // =========================
-    // EVALUATION (FIXED + STRONG PROMPT)
+    // EVALUATION (FIXED)
     // =========================
     public Mono<List<Map<String, Object>>> evaluateAnswers(List<AnswerRequest.QA> answers) {
 
@@ -109,8 +111,8 @@ public class AIService {
             String prompt =
                     "You are FAANG interviewer evaluator.\n" +
                             "Return ONLY valid JSON ARRAY.\n" +
-                            "NO explanation, NO text, NO markdown.\n" +
-                            "Format strictly:\n" +
+                            "No explanation, no markdown.\n" +
+                            "Format:\n" +
                             "[{\"question\":\"\",\"score\":8,\"good\":\"\",\"missing\":\"\",\"improvedAnswer\":\"\"}]\n" +
                             "DATA:\n" + input;
 
@@ -123,7 +125,7 @@ public class AIService {
                                     new TypeReference<List<Map<String, Object>>>() {}
                             );
                         } catch (Exception e) {
-                            log.error("JSON PARSE FAILED", e);
+                            log.error("🔥 JSON PARSE FAILED", e);
                             return List.of(fallback("PARSE_ERROR"));
                         }
                     })
@@ -132,31 +134,43 @@ public class AIService {
                     });
 
         } catch (Exception e) {
+            log.error("🔥 SERIALIZATION ERROR", e);
             return Mono.just(List.of(fallback("SERIALIZATION_ERROR")));
         }
     }
 
     // =========================
-    // FIXED TEXT EXTRACTION
+    // SAFE EXTRACTOR (FIXED NULL ISSUE)
     // =========================
     private String extractText(Map<?, ?> response) {
 
         try {
-            List<?> choices = (List<?>) response.get("choices");
-            if (choices == null || choices.isEmpty()) return "";
+            if (response == null) return "";
+
+            Object choicesObj = response.get("choices");
+            if (!(choicesObj instanceof List<?> choices) || choices.isEmpty()) {
+                log.error("Invalid AI response: {}", response);
+                return "";
+            }
 
             Map<?, ?> first = (Map<?, ?>) choices.get(0);
             Map<?, ?> message = (Map<?, ?>) first.get("message");
 
+            if (message == null || message.get("content") == null) {
+                log.error("Missing content in response: {}", response);
+                return "";
+            }
+
             return message.get("content").toString();
 
         } catch (Exception e) {
+            log.error("🔥 extractText FAILED", e);
             return "";
         }
     }
 
     // =========================
-    // IMPROVED JSON CLEANER (IMPORTANT FIX)
+    // CLEANERS
     // =========================
     private String cleanJson(String response) {
 
@@ -174,7 +188,7 @@ public class AIService {
             return response.substring(start, end + 1);
         }
 
-        log.warn("⚠ Invalid JSON from AI: {}", response);
+        log.warn("⚠ Invalid JSON: {}", response);
         return "[]";
     }
 
@@ -182,6 +196,9 @@ public class AIService {
         return text == null ? "" : text.replace("```", "").trim();
     }
 
+    // =========================
+    // FALLBACK
+    // =========================
     private Map<String, Object> fallback(String msg) {
         Map<String, Object> map = new HashMap<>();
         map.put("score", 0);
